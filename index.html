@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exportar Excel para XML</title>
+</head>
+<body>
+    <input type="file" id="fileUpload" />
+    <button onclick="processFile()">Gerar XML</button>
+
+    <!-- Novo link da biblioteca SheetJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <script>
+        // Função para processar o arquivo Excel e gerar o XML
+        function processFile() {
+            const fileInput = document.getElementById('fileUpload');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert("Por favor, selecione um arquivo Excel.");
+                return;
+            }
+
+            const reader = new FileReader();
+
+            reader.onload = function (e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                
+                // Obtém a primeira planilha do Excel
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+
+                // Converte a planilha para um array de objetos JSON
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                // Divide os registros em lotes de 100
+                const chunkedData = chunkArray(jsonData, 100);
+
+                // Gera e baixa os arquivos XML em lotes de 100 registros
+                chunkedData.forEach((chunk, index) => {
+                    const xmlContent = generateXMLFromExcel(chunk, index + 1);
+                    
+                    // Somente gerar o arquivo se houver registros válidos
+                    if (xmlContent) {
+                        downloadXMLFile(xmlContent, `dados_lote_${index + 1}.xml`);
+                    }
+                });
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Função para dividir o array de dados em lotes de n elementos
+        function chunkArray(arr, chunkSize) {
+            const results = [];
+            for (let i = 1; i < arr.length; i += chunkSize) {
+                results.push([arr[0]].concat(arr.slice(i, i + chunkSize))); // Mantém o cabeçalho na primeira linha
+            }
+            return results;
+        }
+
+        // Função para verificar se um registro está vazio
+        function isRowEmpty(row) {
+            // Considera as primeiras 4 colunas obrigatórias como referência
+            for (let i = 0; i < 4; i++) {
+                if (row[i] !== undefined && row[i] !== "") {
+                    return false; // Se ao menos uma coluna obrigatória estiver preenchida
+                }
+            }
+            return true; // Todas as colunas obrigatórias estão vazias
+        }
+
+        // Função para validar CPF/CNPJ e adicionar zeros à esquerda
+        function formatCpfCnpj(value) {
+            value = String(value || "").trim(); // Garante que o valor seja uma string e remove espaços
+
+            value = value.replace(/\D/g, ""); // Remove todos os caracteres não numéricos
+
+            if (value.length <= 11) {
+                return value.padStart(11, '0'); // CPF deve ter 11 dígitos, adiciona zeros à esquerda se necessário
+            } else if (value.length <= 14) {
+                return value.padStart(14, '0'); // CNPJ deve ter 14 dígitos, adiciona zeros à esquerda se necessário
+            }
+
+            return value; // Retorna o valor sem alteração se já estiver completo
+        }
+
+        // Função para limitar os dados da Coluna B a 50 caracteres
+        function validateColumnB(value) {
+            value = String(value || "").trim(); // Garante que o valor seja uma string e remove espaços
+
+            if (value.length > 50) {
+                return value.substring(0, 50); // Retorna apenas os primeiros 50 caracteres
+            }
+            return value; // Retorna o valor sem alteração se tiver 50 caracteres ou menos
+        }
+
+        // Função para converter valores monetários para 2 casas decimais
+        function formatCurrency(value) {
+            let numericValue = parseFloat(value); // Converte o valor para um número
+            if (isNaN(numericValue)) {
+                return "0.00"; // Retorna 0.00 se o valor não for numérico
+            }
+            return numericValue.toFixed(2); // Converte para string com 2 casas decimais
+        }
+
+        // Função para escapar caracteres especiais do XML
+        function escapeXml(value) {
+            if (typeof value === 'string') {
+                return value.replace(/&/g, "&amp;")
+                            .replace(/</g, "&lt;")
+                            .replace(/>/g, "&gt;")
+                            .replace(/"/g, "&quot;")
+                            .replace(/'/g, "&apos;");
+            }
+            return value; // Se não for string, retorna o valor como está
+        }
+
+        // Função para converter datas do Excel em formato ISO (YYYY-MM-DD)
+        function excelDateToJSDate(serial) {
+            if (typeof serial !== 'number' || isNaN(serial) || serial <= 0) {
+                return ""; // Retorna string vazia se o valor não for um número válido
+            }
+
+            const utc_days = Math.floor(serial - 25569); // Subtrai 25569 (número base do Excel)
+            const date_info = new Date(utc_days * 86400 * 1000); // Converte para milissegundos
+
+            if (isNaN(date_info.getTime())) {
+                return ""; // Retorna string vazia se não for uma data válida
+            }
+
+            return date_info.toISOString().split('T')[0]; // Retorna no formato YYYY-MM-DD
+        }
+
+        // Função para gerar o XML a partir dos dados da planilha
+        function generateXMLFromExcel(data, fileIndex) {
+            const currentDate = new Date().toISOString(); // Data atual em formato ISO
+
+            // Cabeçalho fixo
+            let xmlContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+            xmlContent += `<Arquivo-Lote-Dare xmlns="http://Br.Gov.Sp.Fazenda.AmbPgtos.DareEmissaoLote">\n`;
+            xmlContent += `  <Cabecalho-Arquivo>\n`;
+            xmlContent += `    <VersaoArquivo>2.0</VersaoArquivo>\n`;
+            xmlContent += `    <DataGeracao>${currentDate}</DataGeracao>\n`;
+            xmlContent += `    <DataUltimaModificacao>${currentDate}</DataUltimaModificacao>\n`;
+            xmlContent += `  </Cabecalho-Arquivo>\n`;
+
+            const headers = data[0]; // A primeira linha contém os nomes das colunas
+            let totalRegistros = 0;
+            let dareContent = ""; // Mantém o conteúdo das tags <Dare>
+
+            // Percorre os dados da planilha (ignorando a primeira linha de cabeçalhos)
+            for (let i = 1; i < data.length; i++) {
+                const row = data[i];
+
+                // Verifica se a linha está vazia nas primeiras 4 colunas
+                if (isRowEmpty(row)) {
+                    continue; // Ignora o registro se estiver vazio
+                }
+
+                totalRegistros++; // Incrementa o contador de registros válidos
+
+                let dareEntry = `    <Dare>\n`;
+
+                // Valida e formata CPF/CNPJ na Coluna A (indice 0)
+                const cpfCnpj = formatCpfCnpj(row[0] || "");
+                dareEntry += `      <CpfCnpj>${cpfCnpj}</CpfCnpj>\n`;
+
+                // Valida e ajusta o dado da Coluna B (indice 1) antes de registrar no XML
+                const columnBValue = validateColumnB(row[1] || "");
+                dareEntry += `      <NomeRazaoSocial>${escapeXml(columnBValue)}</NomeRazaoSocial>\n`;
+
+                // Escapar caracteres especiais nos campos NomeRazaoSocial e NomeContribuinte
+                const nomeRazaoSocial = escapeXml(row[5] || "");
+                const nomeContribuinte = escapeXml(row[6] || "");
+
+                dareEntry += `      <NomeRazaoSocial>${nomeRazaoSocial}</NomeRazaoSocial>\n`;
+                dareEntry += `      <NomeContribuinte>${nomeContribuinte}</NomeContribuinte>\n`;
+
+                // Formatação para 2 casas decimais dos campos ValorReceita, ValorTotal e ValorTotalDetalhe
+                const valorReceita = formatCurrency(row[3] || 0);  // ValorReceita: coluna 3 (D)
+                const valorTotalDetalhe = formatCurrency(row[4] || 0);  // ValorTotalDetalhe: coluna 4 (E)
+                const valorTotal = formatCurrency(row[5] || 0);  // ValorTotal: coluna 5 (F)
+
+                dareEntry += `      <ValorReceita>${valorReceita}</ValorReceita>\n`;
+                dareEntry += `      <ValorTotalDetalhe>${valorTotalDetalhe}</ValorTotalDetalhe>\n`;
+                dareEntry += `      <ValorTotal>${valorTotal}</ValorTotal>\n`;
+
+                // Dados a partir da quinta coluna
+                dareEntry += `      <ListaGrupoFilhotes NrRegistros="1">\n`;
+                dareEntry += `        <ListaDaresDetalhe>\n`;
+                dareEntry += `          <DareEmissaoLoteDetalhe>\n`;
+
+                // Formata e registra o CPF/CNPJ da coluna N na tag <Linha04>
+                const linha04CpfCnpj = formatCpfCnpj(row[13] || ""); // Valida e formata o CPF/CNPJ da coluna N (índice 13)
+                dareEntry += `            <Linha04>${linha04CpfCnpj}</Linha04>\n`;
+
+                // Valida e ajusta o dado da Coluna Z (indice 25) antes de registrar no XML
+                const columnZValue = validateColumnB(row[25] || "");
+                dareEntry += `      <NomeContribuinte>${escapeXml(columnZValue)}</NomeContribuinte>\n`;
+
+                // Verifica se os campos se repetem e ignora as colunas B (índice 1), N (índice 13) e Z (índice 25)
+                for (let j = 0; j < row.length; j++) {
+                    // Ignora as colunas B, N e Z
+                    if (j === 1 || j === 13 || j === 25) {
+                        continue; // Pula as colunas B, N e Z
+                    }
+
+                    const tagName = headers[j];
+                    let cellValue = row[j] !== undefined ? row[j] : ""; // Se não houver dado, deixa o campo vazio
+
+                    // Verifica e formata todos os valores de receita e total para 2 casas decimais
+                    if (tagName.includes("ValorReceita") || tagName.includes("ValorTotal") || tagName.includes("ValorTotalDetalhe")) {
+                        cellValue = formatCurrency(cellValue);
+                    }
+
+                    // Escapar os caracteres especiais nos campos de nomes
+                    cellValue = escapeXml(cellValue);
+
+                    dareEntry += `            <${tagName}>${cellValue}</${tagName}>\n`;
+                }
+
+                dareEntry += `          </DareEmissaoLoteDetalhe>\n`;
+                dareEntry += `        </ListaDaresDetalhe>\n`;
+                dareEntry += `      </ListaGrupoFilhotes>\n`;
+
+                dareEntry += `    </Dare>\n`;
+
+                // Adiciona o conteúdo da linha válida
+                dareContent += dareEntry;
+            }
+
+            // Se não houver registros válidos, retorna null
+            if (totalRegistros === 0) {
+                return null;
+            }
+
+            // Finaliza o XML com o número de registros
+            xmlContent += `  <Dare-Principal NrRegistros="${totalRegistros}">\n`;
+            xmlContent += dareContent; // Adiciona os registros <Dare>
+            xmlContent += `  </Dare-Principal>\n`;
+            xmlContent += `</Arquivo-Lote-Dare>`;
+
+            return xmlContent;
+        }
+
+        // Função para baixar o XML gerado
+        function downloadXMLFile(xmlContent, fileName) {
+            const blob = new Blob([xmlContent], { type: 'application/xml' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+    </script>
+</body>
+</html>
